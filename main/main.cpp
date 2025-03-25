@@ -9,7 +9,8 @@
 #include "math.h"
 
 
-static const char* TAG = "BNO055ESP32Example";
+static const char* TAGsetup = "BNOSetup";
+static const char* TAGget = "BNOget"; 
 
 
 
@@ -31,6 +32,20 @@ twai_message_t accelMsg = {
     .identifier = (uint32_t)17,
     .data_length_code = 8,
     .data = {0, 100, 0, 200, 0, 150, 0, 250},
+};
+
+bno055_offsets_t storedOffsets = {
+    .accelOffsetX = -38,
+    .accelOffsetY = -38,
+    .accelOffsetZ = -36,
+    .magOffsetX = -107,
+    .magOffsetY = -87,
+    .magOffsetZ = -357,
+    .gyroOffsetX = 1,
+    .gyroOffsetY = -3,
+    .gyroOffsetZ = -1,
+    .accelRadius = 1000,
+    .magRadius = 618
 };
 
 // Filter configuration
@@ -87,7 +102,8 @@ uint32_t alerts_to_enable =
     TWAI_ALERT_BUS_OFF;
 
     uint32_t* alerts = new uint32_t; 
-    void twaiErrPrint() {
+
+void twaiErrPrint() {
         if (*alerts & TWAI_ALERT_TX_IDLE) {
             ESP_LOGI(TAG_TWAI, "TX idle: No more messages queued for transmission");
         }
@@ -146,7 +162,6 @@ uint32_t alerts_to_enable =
     }
     
 void TWAIconfig() {
-    
     // Install TWAI driver
     if (twai_driver_install(&general_config, &t_config, &filter_config) == ESP_OK) {
         ESP_LOGI(TAG_TWAI, "Driver installed");
@@ -163,35 +178,64 @@ void TWAIconfig() {
         return;
     }
     ESP_ERROR_CHECK(twai_reconfigure_alerts(alerts_to_enable, NULL));
-    ESP_LOGI(TAG, "TWAI alerts configured");
+    ESP_LOGI(TAG_TWAI, "TWAI alerts configured");
 
 
 }
+    BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
+
+bool successFullBNOStart = false; 
 
 void bnoconfig(){
     
     vTaskDelay(100);
-    BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
+    while(!successFullBNOStart){
+    // try {
+    //     bno.begin();  // BNO055 is in CONFIG_MODE until it is changed
+    //     bno.enableExternalCrystal();
+    //     // bno.setSensorOffsets(storedOffsets);
+    //     // bno.setAxisRemap(BNO055_REMAP_CONFIG_P1, BNO055_REMAP_SIGN_P1); // see datasheet, section 3.4
+    //     /* you can specify a PoWeRMode using:
+    //             - setPwrModeNormal(); (Default on startup)
+    //             - setPwrModeLowPower();
+    //             - setPwrModeSuspend(); (while suspended bno055 must remain in CONFIG_MODE)
+    //     */
+    //     bno.setOprModeNdof();
+    //     ESP_LOGI(TAGsetup, "Setup Done.");
+    //     successFullBNOStart = true; 
+    // } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
+    //     ESP_LOGE(TAGsetup, "Setup Failed, Error: %s", ex.what());
+    // } catch (std::exception& ex) {
+    //     ESP_LOGE(TAGsetup, "Setup Failed, Error: %s", ex.what());
+    // }
+    // vTaskDelay(pdMS_TO_TICKS(50)); 
+    // }
     try {
-        bno.begin();  // BNO055 is in CONFIG_MODE until it is changed
-        bno.enableExternalCrystal();
-        // bno.setSensorOffsets(storedOffsets);
-        // bno.setAxisRemap(BNO055_REMAP_CONFIG_P1, BNO055_REMAP_SIGN_P1); // see datasheet, section 3.4
-        /* you can specify a PoWeRMode using:
-                - setPwrModeNormal(); (Default on startup)
-                - setPwrModeLowPower();
-                - setPwrModeSuspend(); (while suspended bno055 must remain in CONFIG_MODE)
-        */
-        bno.setOprModeNdof();
-        ESP_LOGI(TAG, "Setup Done.");
-    } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
-        ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
+        bno.begin();  // BNO055 starts in CONFIG_MODE
+        bno.enableExternalCrystal(); // Use external crystal for better accuracy
+        bno.setSensorOffsets(storedOffsets);
+        bno.setAccelConfig(BNO055_CONF_ACCEL_RANGE_4G,
+                           BNO055_CONF_ACCEL_BANDWIDTH_7_81HZ,
+                           BNO055_CONF_ACCEL_MODE_NORMAL);
+    
+        bno.setGyroConfig(BNO055_CONF_GYRO_RANGE_1000DPS,
+                          BNO055_CONF_GYRO_BANDWIDTH_12HZ,
+                          BNO055_CONF_GYRO_MODE_NORMAL);
+        
+        // SET OPERATION MODE TO ACCGYRO NO FUSION gives bandwidth and range control
+        bno.setOprModeAccGyro();
+        ESP_LOGI(TAGsetup, "Setup Done.");
+        successFullBNOStart = true; 
+    } catch (BNO055BaseException &ex) {
+        ESP_LOGE(TAGsetup, "Setup Failed, Error: %s", ex.what());
         return;
-    } catch (std::exception& ex) {
-        ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
+    } catch (std::exception &ex) {
+        ESP_LOGE(TAGsetup, "Setup Failed, Error: %s", ex.what());
         return;
     }
-
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    }
 }
 esp_err_t res; 
 esp_err_t errStatus; 
@@ -201,7 +245,12 @@ void twai_task(void *pvParameters) {
     while (true) {
         // Transmit gyroMsg
         errStatus = twai_transmit(&gyroMsg, pdMS_TO_TICKS(1));
-        
+        if (errStatus == ESP_OK) {
+            passCount++;
+        } else {
+            ESP_LOGE(TAG_TWAI,"Gyro Tx Failed: %s",esp_err_to_name(errStatus));
+            failCount++;
+        }
 
         vTaskDelay(pdMS_TO_TICKS(5));
 
@@ -211,13 +260,13 @@ void twai_task(void *pvParameters) {
         if (errStatus == ESP_OK) {
             passCount++;
         } else {
-            ESP_LOGE(TAG_TWAI,"Gyro Tx Failed: %s",esp_err_to_name(errStatus));
+            ESP_LOGE(TAG_TWAI,"Accel Tx Failed: %s",esp_err_to_name(errStatus));
             failCount++;
         }
 
         // Print statistics every 100 messages
         if (progCount % 100 == 0) {
-            printf("QUEUED = %d, FAILED = %d\n", passCount, failCount);
+            ESP_LOGI(TAG_TWAI,"QUEUED = %d, FAILED = %d\n", passCount, failCount);
             progCount = 0;
             res = twai_read_alerts(alerts,pdMS_TO_TICKS(0));
             if(res == ESP_ERR_TIMEOUT){
@@ -258,60 +307,38 @@ void fakeData(void *pvParameters) {
     while (true) {
         esp_task_wdt_reset();
     
-        // Prepare data for transmission
-        // for (int i = 0; i < 8; i++) {
-        //     testMessage.data[i] = (testMessage.data[i] + 10) % 256; // Example modification
-        // }
+        //Prepare data for transmission
+        for (int i = 0; i < 8; i++) {
+            testMessage.data[i] = (testMessage.data[i] + 10) % 256; // Example modification
+        }
 
-        // ESP_LOGI(TAG_DATA, "Data prepared: [%d, %d, %d, %d, %d, %d, %d, %d]",
-        //          testMessage.data[0], testMessage.data[1], testMessage.data[2], testMessage.data[3],
-        //          testMessage.data[4], testMessage.data[5], testMessage.data[6], testMessage.data[7]);
+        ESP_LOGI(TAG_DATA, "Data prepared: [%d, %d, %d, %d, %d, %d, %d, %d]",
+                 testMessage.data[0], testMessage.data[1], testMessage.data[2], testMessage.data[3],
+                 testMessage.data[4], testMessage.data[5], testMessage.data[6], testMessage.data[7]);
 
-        // Simulate data preparation time
-        vTaskDelay(pdMS_TO_TICKS(500));
+        //Simulate data preparation time
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
 void calibrationRead(void *pvParameters) {
     esp_task_wdt_add(NULL);
-    BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
-
-    try {
-        bno.begin();  // BNO055 is in CONFIG_MODE until it is changed
-        bno.enableExternalCrystal();
-        // bno.setSensorOffsets(storedOffsets);
-        // bno.setAxisRemap(BNO055_REMAP_CONFIG_P1, BNO055_REMAP_SIGN_P1); // see datasheet, section 3.4
-        /* you can specify a PoWeRMode using:
-                - setPwrModeNormal(); (Default on startup)
-                - setPwrModeLowPower();
-                - setPwrModeSuspend(); (while suspended bno055 must remain in CONFIG_MODE)
-        */
-        bno.setOprModeNdof();
-        ESP_LOGI(TAG, "Setup Done.");
-    } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
-        ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-        return;
-    } catch (std::exception& ex) {
-        ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-        return;
-    }
-
     try {
         int8_t temperature = bno.getTemp();
-        ESP_LOGI(TAG, "TEMP: %d°C", temperature);
+        ESP_LOGI(TAGsetup, "TEMP: %d°C", temperature);
 
         int16_t sw = bno.getSWRevision();
         uint8_t bl_rev = bno.getBootloaderRevision();
-        ESP_LOGI(TAG, "SW rev: %d, bootloader rev: %u", sw, bl_rev);
+        ESP_LOGI(TAGsetup, "SW rev: %d, bootloader rev: %u", sw, bl_rev);
 
         bno055_self_test_result_t res = bno.getSelfTestResult();
-        ESP_LOGI(TAG, "Self-Test Results: MCU: %u, GYR:%u, MAG:%u, ACC: %u", res.mcuState, res.gyrState, res.magState,
+        ESP_LOGI(TAGsetup, "Self-Test Results: MCU: %u, GYR:%u, MAG:%u, ACC: %u", res.mcuState, res.gyrState, res.magState,
                  res.accState);
     } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
-        ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+        ESP_LOGE(TAGsetup, "Something bad happened: %s", ex.what());
         return;
     } catch (std::exception& ex) {
-        ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+        ESP_LOGE(TAGsetup, "Something bad happened: %s", ex.what());
         return;
     }
 
@@ -320,18 +347,18 @@ void calibrationRead(void *pvParameters) {
             // Calibration 3 = fully calibrated, 0 = not calibrated
             bno055_calibration_t cal = bno.getCalibration();
             bno055_vector_t v = bno.getVectorEuler();
-            ESP_LOGI(TAG, "Euler: X: %.1f Y: %.1f Z: %.1f || Calibration SYS: %u GYRO: %u ACC:%u MAG:%u", v.x, v.y, v.z, cal.sys,
+            ESP_LOGI(TAGsetup, "Euler: X: %.1f Y: %.1f Z: %.1f || Calibration SYS: %u GYRO: %u ACC:%u MAG:%u", v.x, v.y, v.z, cal.sys,
                      cal.gyro, cal.accel, cal.mag);
             if (cal.gyro == 3 && cal.accel == 3 && cal.mag == 3) {
-                ESP_LOGI(TAG, "Fully Calibrated.");
+                ESP_LOGI(TAGsetup, "Fully Calibrated.");
                 bno.setOprModeConfig();                         // Change to OPR_MODE
                 bno055_offsets_t txt = bno.getSensorOffsets();  // NOTE: this must be executed in CONFIG_MODE
-                ESP_LOGI(TAG,
+                ESP_LOGI(TAGsetup,
                          "\nOffsets:\nAccel: X:%d, Y:%d, Z:%d;\nMag: X:%d, Y:%d, Z:%d;\nGyro: X:%d, Y:%d, Z:%d;\nAccelRadius: "
                          "%d;\nMagRadius: %d;\n",
                          txt.accelOffsetX, txt.accelOffsetY, txt.accelOffsetZ, txt.magOffsetX, txt.magOffsetY, txt.magOffsetZ,
                          txt.gyroOffsetX, txt.gyroOffsetY, txt.gyroOffsetZ, txt.accelRadius, txt.magRadius);
-                ESP_LOGI(TAG,
+                ESP_LOGI(TAGsetup,
                          "Store this values, place them using setSensorOffsets() after every reset of the BNO055 to avoid the "
                          "calibration process, unluckily MAG requires to be calibrated after every reset, for more information "
                          "check datasheet.");
@@ -340,10 +367,10 @@ void calibrationRead(void *pvParameters) {
             esp_task_wdt_reset();
 
         } catch (BNO055BaseException& ex) {
-            ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+            ESP_LOGE(TAGsetup, "Something bad happened: %s", ex.what());
             return;
         } catch (std::exception& ex) {
-            ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+            ESP_LOGE(TAGsetup, "Something bad happened: %s", ex.what());
         }
         vTaskDelay(100 / portTICK_PERIOD_MS);  // in fusion mode max output rate is 100hz (actual rate: 100ms (10hz))
     }
@@ -351,71 +378,55 @@ void calibrationRead(void *pvParameters) {
 }
 
 void sensorRead(void *pvParameters) {
-// CALCULATED MEMS OFFSETS FOR SENSOR CALIBRATION
-bno055_offsets_t storedOffsets = {
-    .accelOffsetX = -38,
-    .accelOffsetY = -38,
-    .accelOffsetZ = -36,
-    .magOffsetX = -107,
-    .magOffsetY = -87,
-    .magOffsetZ = -357,
-    .gyroOffsetX = 1,
-    .gyroOffsetY = -3,
-    .gyroOffsetZ = -1,
-    .accelRadius = 1000,
-    .magRadius = 618
-};
+
 
 // INITIALIZE BNO055 SENSOR
 esp_task_wdt_add(NULL); // Add watchdog task
-BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25); // Initialize BNO055 over UART
+// BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25); // Initialize BNO055 over UART
 
-try {
-    bno.begin();  // BNO055 starts in CONFIG_MODE
-    bno.enableExternalCrystal(); // Use external crystal for better accuracy
+// try {
+//     bno.begin();  // BNO055 starts in CONFIG_MODE
+//     bno.enableExternalCrystal(); // Use external crystal for better accuracy
 
-    // SET SENSOR CONFIGURATIONS
-    // Accelerometer: Set range to ±4G, bandwidth to 62.5Hz, mode to NORMAL
-    bno.setAccelConfig(BNO055_CONF_ACCEL_RANGE_4G,
-                       BNO055_CONF_ACCEL_BANDWIDTH_62_5HZ,
-                       BNO055_CONF_ACCEL_MODE_NORMAL);
+//     bno.setAccelConfig(BNO055_CONF_ACCEL_RANGE_4G,
+//                        BNO055_CONF_ACCEL_BANDWIDTH_7_81HZ,
+//                        BNO055_CONF_ACCEL_MODE_NORMAL);
 
-    // Gyroscope: Set range to ±1000°/s, bandwidth to 23Hz, mode to NORMAL
-    bno.setGyroConfig(BNO055_CONF_GYRO_RANGE_1000DPS,
-                      BNO055_CONF_GYRO_BANDWIDTH_23HZ,
-                      BNO055_CONF_GYRO_MODE_NORMAL);
+//     bno.setGyroConfig(BNO055_CONF_GYRO_RANGE_1000DPS,
+//                       BNO055_CONF_GYRO_BANDWIDTH_12HZ,
+//                       BNO055_CONF_GYRO_MODE_NORMAL);
 
-    // LOAD STORED CALIBRATION OFFSETS
-    bno.setSensorOffsets(storedOffsets);
+//     // LOAD STORED CALIBRATION OFFSETS
+//     bno.setSensorOffsets(storedOffsets);
 
-    // SET OPERATION MODE TO NDOF (9 Degrees of Freedom for Fused Data)
-    bno.setOprModeIMU();
-    ESP_LOGI(TAG, "Setup Done.");
-} catch (BNO055BaseException &ex) {
-    ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-    return;
-} catch (std::exception &ex) {
-    ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-    return;
-}
+//     // SET OPERATION MODE TO NDOF (9 Degrees of Freedom for Fused Data)
+//     bno.setOprModeAccGyro();
+//     ESP_LOGI(TAGget, "Setup Done.");
+// } catch (BNO055BaseException &ex) {
+//     ESP_LOGE(TAGget, "Setup Failed, Error: %s", ex.what());
+//     return;
+// } catch (std::exception &ex) {
+//     ESP_LOGE(TAGget, "Setup Failed, Error: %s", ex.what());
+//     return;
+// }
 
 // VERIFY SENSOR SETUP AND GET BASIC INFO
 try {
     int8_t temperature = bno.getTemp();
-    ESP_LOGI(TAG, "TEMP: %d°C", temperature);
+    ESP_LOGI(TAGget, "TEMP: %d°C", temperature);
 
     int16_t sw = bno.getSWRevision();
     uint8_t bl_rev = bno.getBootloaderRevision();
-    ESP_LOGI(TAG, "SW rev: %d, bootloader rev: %u", sw, bl_rev);
+    ESP_LOGI(TAGget, "SW rev: %d, bootloader rev: %u", sw, bl_rev);
 
     bno055_self_test_result_t res = bno.getSelfTestResult();
-    ESP_LOGI(TAG, "Self-Test Results: MCU: %u, GYR: %u, MAG: %u, ACC: %u",
+    ESP_LOGI(TAGget, "Self-Test Results: MCU: %u, GYR: %u, MAG: %u, ACC: %u",
              res.mcuState, res.gyrState, res.magState, res.accState);
 } catch (BNO055BaseException &ex) {
-    ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+    ESP_LOGE(TAGget, "Something bad happened: %s", ex.what());
     return;
 } catch (std::exception &ex) {
-    ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
+    ESP_LOGE(TAGget, "Something bad happened: %s", ex.what());
     return;
 }
 
@@ -428,23 +439,23 @@ bool accelInvalid;
 while (true) {
     // READ SENSOR DATA
     rotationalAccel = bno.getVectorGyroscope();    // Gyroscope readings in °/s
-    linearAccel = bno.getVectorLinearAccel();      // Linear acceleration in m/s^2
+    linearAccel = bno.getVectorAccelerometer();      // Linear acceleration in m/s^2
     bool gyroInvalid = isnan(rotationalAccel.x) || isnan(rotationalAccel.y) || isnan(rotationalAccel.z);
     bool accelInvalid = isnan(linearAccel.x) || isnan(linearAccel.y) || isnan(linearAccel.z);
     if (gyroInvalid) {
-        ESP_LOGW(TAG, "Invalid gyro data detected. Forcing -1 values.");
+        ESP_LOGW(TAGget, "Invalid gyro data detected. Forcing -1 values.");
         for (int i = 0; i < 6; i++) gyroMsg.data[i] = 0xFF;  // -1 in int16_t is 0xFFFF
     }
     if (accelInvalid) {
-        ESP_LOGW(TAG, "Invalid accel data detected. Forcing -1 values.");
+        ESP_LOGW(TAGget, "Invalid accel data detected. Forcing -1 values.");
         for (int i = 0; i < 6; i++) accelMsg.data[i] = 0xFF;
     }
 
     
     // PRINT RAW SENSOR DATA (FOR DEBUGGING)
-    printf("Linear Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
+    ESP_LOGI(TAG_DATA,"Linear Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
            linearAccel.x, linearAccel.y, linearAccel.z);
-    printf("Rotational Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
+    ESP_LOGI(TAG_DATA,"Rotational Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
            rotationalAccel.x, rotationalAccel.y, rotationalAccel.z);
 
            if (!gyroInvalid) {
